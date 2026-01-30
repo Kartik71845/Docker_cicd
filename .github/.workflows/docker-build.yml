@@ -1,0 +1,27 @@
+name: Docker cicd
+on: 
+  push:
+    branches:  
+      - main
+
+jobs: 
+  build:
+    runs-on: ubuntu-latest
+    steps: 
+      - uses: actions/checkout@v4
+      - run: |
+          echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+      - run: docker build -t dockerized_app:latest .
+      - run: |
+          docker tag dockerized_app:latest ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest
+          docker tag dockerized_app:latest ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:${{ github.sha }}
+      - run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest 
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:${{ github.sha }}
+
+      - run: docker run -d -p 3000:3000 --name dockerized_app ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest
+      - run: sleep 5
+      - run: curl -f http://localhost:3000 || exit 1
+      - run: docker logs dockerized_app
+      - run : docker stop dockerized_app
+      - run : docker rm dockerized_app  
