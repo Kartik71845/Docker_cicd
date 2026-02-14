@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'dockerfile'
+      - 'app.js'
+      - 'docker-compose.yml'
 
 jobs:
   build:
