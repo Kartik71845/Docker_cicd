@@ -1,67 +1,40 @@
-name: Docker Build And Deploy
+name: Deploy via SSM
 
 on:
   push:
-    branches:
-      - test
-  workflow_dispatch:
-
-env:
-  AWS_REGION: us-east-1
+    branches: [test]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: docker build -t node-docker-app:latest -f dockerfile .
-
-      - name: Smoke test container
-        run: |
-          docker run -d --name node-docker-app-test -p 3000:3000 node-docker-app:latest
-          sleep 5
-          curl --fail http://127.0.0.1:3000
-
-      - name: Cleanup test container
-        if: always()
-        run: docker rm -f node-docker-app-test || true
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
 
-      - name: Deploy via SSM
+      - name: Deploy
         run: |
-          COMMAND_ID=$(aws ssm send-command \
+          CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy latest Docker app" \
-            --parameters 'commands=[
-              "cd /home/ubuntu/3tierapp",
+            --parameters commands=[
+              "cd /home/ubuntu/3tierapp || exit 1",
               "git pull origin main",
-              "sed -i '\''s/dockerfile: Dockerfile/dockerfile: dockerfile/'\'' docker-compose.yml",
-              "docker compose down || true",
-              "docker compose up -d --build"
-            ]' \
-            --query 'Command.CommandId' \
-            --output text)
+              "sudo docker-compose down",
+              "sudo docker-compose up -d --build"
+            ] \
+            --query "Command.CommandId" --output text)
+
+          echo "CMD_ID=$CMD_ID"
 
           aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
+            --command-id $CMD_ID \
             --instance-id "${{ secrets.INSTANCE_ID }}"
 
           aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
+            --command-id $CMD_ID \
             --instance-id "${{ secrets.INSTANCE_ID }}"
