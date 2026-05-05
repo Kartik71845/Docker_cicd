@@ -1,4 +1,4 @@
-name: Test SSM connection
+name: CI-CD SSM Deploy
 
 on:
   push:
@@ -6,10 +6,21 @@ on:
       - test
 
 jobs:
-  test-ssm:
+  build-deploy:
     runs-on: ubuntu-latest
-
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login DockerHub
+        run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build Image
+        run: docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest .
+
+      - name: Push Image
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest
+
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -17,22 +28,24 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Test SSM
+      - name: Deploy via SSM
         run: |
-          CMD_ID=$(aws ssm send-command \
+          aws ssm send-command \
             --instance-ids "${{ secrets.INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters commands="echo SSM_OK,whoami,pwd" \
-            --query "Command.CommandId" \
-            --output text)
+            --parameters commands="docker pull ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest"
 
-          echo "CMD_ID=$CMD_ID"
+          aws ssm send-command \
+            --instance-ids "${{ secrets.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands="docker stop app || true"
 
-          aws ssm wait command-executed \
-            --command-id "$CMD_ID" \
-            --instance-id "${{ secrets.INSTANCE_ID }}"
+          aws ssm send-command \
+            --instance-ids "${{ secrets.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands="docker rm app || true"
 
-          aws ssm get-command-invocation \
-            --command-id "$CMD_ID" \
-            --instance-id "${{ secrets.INSTANCE_ID }}" \
-            --output text
+          aws ssm send-command \
+            --instance-ids "${{ secrets.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands="docker run -d -p 3000:3000 --name app ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest"
