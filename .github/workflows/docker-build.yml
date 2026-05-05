@@ -1,14 +1,18 @@
-name: Docker Build And Deploy
+name: Docker CI/CD
 
 on:
   push:
     branches:
       - test
+    paths:
+      - dockerfile
+      - app.js
+      - docker-compose.yml
+      - .github/workflows/docker-build.yml
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
-  APP_DIR: /home/ubuntu/3tierapp
 
 jobs:
   build:
@@ -18,25 +22,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t node-docker-app:latest -f dockerfile .
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Smoke test container
+      - name: Build image
+        run: docker build -t dockerized_app:test -f dockerfile .
+
+      - name: Test container
         run: |
-          docker run -d --name node-docker-app-test -p 3000:3000 node-docker-app:latest
+          docker run -d -p 3000:3000 --name test-app dockerized_app:test
           sleep 5
           curl --fail http://127.0.0.1:3000
+          docker logs test-app
 
       - name: Cleanup test container
         if: always()
-        run: docker rm -f node-docker-app-test || true
+        run: docker rm -f test-app || true
+
+      - name: Tag image
+        run: |
+          docker tag dockerized_app:test ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest
+          docker tag dockerized_app:test ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:${{ github.sha }}
+
+      - name: Push image
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:${{ github.sha }}
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -48,26 +66,27 @@ jobs:
           cat > ssm-commands.json <<EOF
           {
             "commands": [
-              "cd ${{ env.APP_DIR }}",
-              "git pull origin ${{ github.ref_name }}",
-              "docker compose down || true",
-              "docker compose up -d --build"
+              "docker pull ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest",
+              "docker stop app || true",
+              "docker rm app || true",
+              "docker run -d -p 3000:3000 --name app ${{ secrets.DOCKERHUB_USERNAME }}/dockerized_app:latest"
             ]
           }
           EOF
 
-          COMMAND_ID=$(aws ssm send-command \
+          CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy latest Docker app" \
             --parameters file://ssm-commands.json \
-            --query 'Command.CommandId' \
+            --query "Command.CommandId" \
             --output text)
 
+          echo "Command ID: $CMD_ID"
+
           aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
+            --command-id "$CMD_ID" \
             --instance-id "${{ secrets.INSTANCE_ID }}"
 
           aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
+            --command-id "$CMD_ID" \
             --instance-id "${{ secrets.INSTANCE_ID }}"
